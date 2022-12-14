@@ -36,9 +36,6 @@ from statsmodels.regression.linear_model import OLS
 
 DATA_PATH = '/Users/franklinwang/Downloads/sp500.h5'
 RANDOM_STATE = 0
-
-TEST_SIZE = 0.2
-CV = 4
 EPSILON = 1e-12
 
 
@@ -89,11 +86,12 @@ def generate_features(df):
     print('{}: generating features...'.format(pd.Timestamp.now()))
     df_unstacked = df.unstack('uspn').sort_index()
     assert df_unstacked.head().index.names == ['date']
+    volume = df_unstacked['volume']
     log_volume = df_unstacked['log_volume']
     ohlc = df_unstacked['ohlc_1d']
     rv = df_unstacked['rv_1d']
     ret = np.log1p(df_unstacked['ret_raw'])
-    mktcap = df_unstacked['sp_weight'].shift(1)
+    mktcap_lagged = df_unstacked['sp_weight'].shift(1).stack('uspn').sort_index()
     features = dict()
     volume = df_unstacked['volume']
     vlm_pred_naive = volume.ewm(halflife=60, min_periods=60).mean()
@@ -107,14 +105,13 @@ def generate_features(df):
         features['ret_' + str(start_) + '_' + str(end_)] = ret.rolling(end_ - start_).mean().shift(start_ + 1)
         features['ohlc_' + str(start_) + '_' + str(end_)] = ohlc.rolling(end_ - start_).mean().shift(start_ + 1) ** 0.5
         features['rv_' + str(start_) + '_' + str(end_)] = rv.rolling(end_ - start_).mean().shift(start_ + 1) ** 0.5
-    features_list = list(features.keys())
-    for f in features_list:
-        if f == 'target':
-            continue
-        features['mktcap_x_' + f] = mktcap * features[f]
     features = pd.concat(features, axis=1)
     features = normalize(features)
     features = features.stack('uspn').sort_index().dropna()
+    for f in features.columns:
+        if f == 'target':
+            continue
+        features['mktcap_x_' + f] = mktcap_lagged * features[f]
     target = target.stack('uspn').reindex(index=features.index)
     vlm_pred_naive = vlm_pred_naive.stack('uspn').reindex(index=features.index)
     return target, features, vlm_pred_naive
@@ -176,8 +173,8 @@ def run_master():
     scores = dict()
     counter = 0
     total = int(np.product([len(v) for v in params.values()]))
-    for hl_days in [180]:
-        for alpha in [0.001]:
+    for hl_days in params['hl_days']:
+        for alpha in params['alpha']:
             counter += 1
             print('{}: testing param set {}/{}...'.format(pd.Timestamp.now(), counter, total))
             prediction = predict(features, target, raw_target, cv_slices[:-2],
