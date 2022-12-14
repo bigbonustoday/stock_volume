@@ -34,7 +34,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from statsmodels.regression.linear_model import OLS
 
-DATA_PATH = 'C:\\Users\\LucyYu\\Downloads\\sp500.h5'
+DATA_PATH = '/Users/franklinwang/Downloads/sp500.h5'
 RANDOM_STATE = 0
 
 TEST_SIZE = 0.2
@@ -120,45 +120,39 @@ def generate_features(df):
     return target, features, vlm_pred_naive
 
 
-def score_model(params, features, target, raw_target, cv_slices):
-    param_grid_size = len(params['alpha']) * len(params['hl_days'])
-    raw_target_unstacked = raw_target.unstack('uspn').sort_index()
+def predict(features, target, raw_target, cv_slices, **params):
     dates = features.index.get_level_values(0)
-    scores = {}
-    counter = 0
-    for alpha in params['alpha']:
-        for hl_days in params['hl_days']:
-            counter += 1
-            print('{}: fitting param grid id={}/{}'.format(pd.Timestamp.now(), counter, param_grid_size))
-            predicted = []
-            for i, (train_slicer, validate_slicer) in enumerate(cv_slices):  # last 2 slices are for test
-                last_train_date = features.index[train_slicer][-1][0]
-                sample_weight = np.exp((dates[train_slicer] - last_train_date) / pd.Timedelta(days=hl_days) * np.log(2))
-                lasso_model = make_pipeline(StandardScaler(),
-                                            linear_model.Lasso(alpha=alpha, random_state=RANDOM_STATE))
-                lasso_model.fit(features[train_slicer], target[train_slicer],
-                                lasso__sample_weight=sample_weight)
-                predicted_ = lasso_model.predict(features[validate_slicer])
-                predicted.append(pd.Series(predicted_, index=target[validate_slicer].index))
-            predicted = pd.concat(predicted, axis=0)
-            # inverse transform target -> raw target
-            predicted = np.expm1(predicted)
-            # run regression for evaluation
-            score_data = pd.DataFrame({'vlm_pred/vlm_pred_naive-1': predicted, 'vlm/vlm_pred_naive-1': raw_target}).dropna()
-            model = OLS(endog=score_data['vlm/vlm_pred_naive-1'], exog=score_data['vlm_pred/vlm_pred_naive-1']).fit()
-            scores[(alpha, hl_days)] = model.rsquared, model.params.iloc[0], model.tvalues.iloc[0]
-    scores = pd.Series(scores)
-    scores.index.set_names(['alpha', 'sample weight halflife'], inplace=True)
-    scores = scores.unstack(0).sort_index()
-    print(scores.applymap(lambda x: [np.round(a, 4) for a in x]))
+    alpha = params['alpha']
+    hl_days = params['hl_days']
+    predicted = []
+    for i, (train_slicer, validate_slicer) in enumerate(cv_slices):  # last 2 slices are for test
+        last_train_date = features.index[train_slicer][-1][0]
+        sample_weight = np.exp((dates[train_slicer] - last_train_date) / pd.Timedelta(days=hl_days) * np.log(2))
+        lasso_model = make_pipeline(StandardScaler(),
+                                    linear_model.Lasso(alpha=alpha, random_state=RANDOM_STATE))
+        lasso_model.fit(features[train_slicer], target[train_slicer],
+                        lasso__sample_weight=sample_weight)
+        predicted_ = lasso_model.predict(features[validate_slicer])
+        predicted.append(pd.Series(predicted_, index=target[validate_slicer].index))
+    predicted = pd.concat(predicted, axis=0)
+    # inverse transform target -> raw target
+    predicted = np.expm1(predicted)
+    # run regression for evaluation
+    score_data = pd.DataFrame({'vlm_pred/vlm_pred_naive-1': predicted, 'vlm/vlm_pred_naive-1': raw_target}).dropna()
+    return score_data
+
+
+def score(score_data):
+    model = OLS(endog=score_data['vlm/vlm_pred_naive-1'], exog=score_data['vlm_pred/vlm_pred_naive-1']).fit()
+    return np.round(model.rsquared,4), np.round(model.params.iloc[0],2), np.round(model.tvalues.iloc[0],2)
 
 
 def run_master():
     df = load_data()
+
+    # raw_target = vlm/vlm_pred_naive - 1
+    # target = log(max(raw_target, -0.9))
     raw_target, features, vlm_pred_naive = generate_features(df)
-    # raw_target_unstacked = raw_target.unstack('uspn').sort_index()
-    # target_unstacked = normalize(np.log1p(raw_target_unstacked.clip(lower=-0.9)))  # transform Y for fitting (this will be reversed later)
-    # target = target_unstacked.stack('uspn').sort_index()
     target = np.log1p(raw_target.clip(lower=-0.9))
     features = features.clip(lower=-3, upper=3)  # simple outlier removal
 
@@ -179,19 +173,35 @@ def run_master():
         'hl_days': [30, 180, 365, 365*3],
         'alpha': [1, 0.1, 0.01, 0.001, 0.0001]
     }
-    params = {
-        'hl_days': [180], # [30, 180, 365, 365*3],
-        'alpha': [0.001], # [1, 0.1, 0.01, 0.001, 0.0001]
-    }
-    # hyperparam tuning
-    score_model(params, features, target, raw_target, cv_slices[:-2])
+    scores = dict()
+    counter = 0
+    total = int(np.product([len(v) for v in params.values()]))
+    for hl_days in [180]:
+        for alpha in [0.001]:
+            counter += 1
+            print('{}: testing param set {}/{}...'.format(pd.Timestamp.now(), counter, total))
+            prediction = predict(features, target, raw_target, cv_slices[:-2],
+                                 hl_days=hl_days, alpha=alpha)
+            scores[hl_days, alpha] = score(prediction)
+    print('===hyperparam scores===')
+    print('- Format: (R2, beta, t) -')
+    print('- based on in-sample data only: 2000-2017')
+    print(scores)
 
     # test
-    params = {
-        'hl_days': [180], # [30, 180, 365, 365*3],
-        'alpha': [0.001], # [1, 0.1, 0.01, 0.001, 0.0001]
-    }
-    score_model(params, features, target, raw_target, cv_slices[-2:])
+    print('===detailed fitting stats for chosen params====')
+    hl_days = 180
+    alpha = 0.001
+    prediction = predict(features, target, raw_target, cv_slices,
+                         hl_days=hl_days, alpha=alpha)
+    print('- in-sample fit 2000-2017 -')
+    print(score(prediction.loc[pd.IndexSlice[:'2017', :], :]))
+    print('- out-of-sample fit 2018-2019 -')
+    print(score(prediction.loc[pd.IndexSlice['2018':, :], :]))
+    print('- fit by year -')
+    for year in range(2002, 2020):
+        print('{}: {}'.format('Y' + str(year), score(prediction.loc[pd.IndexSlice[str(year), :], :])))
+
 
 
 # Press the green button in the gutter to run the script.
