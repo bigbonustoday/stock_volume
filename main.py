@@ -1,40 +1,17 @@
 # Interview project for Cubist
 # Franklin Wang
 
-# Objective: predict daily stock volume
-# Target: 20d z-score of Log Volume (LogVol - mean(LogVol, 20)) / stdev(LogVol, 20)
-#   Volume is "spiky" like volatility. Natural log transformation makes it better-behaved for linear modeling.
-#   Volume is highly persistent. AR plot shows a long tail (60d ~= 0.5, 260d ~= 0.3). Log volume exhibits long-term
-#       trends / drifts that presents stationarity problems. This is avoided by modeling its z-score instead.
-#   Why 20d? No hard and fast rule here. I picked 20 to be broadly in line with the typical half life of volatility in
-#       asset prices.
-# Features
-#   Past volume: non-overlapping rolling windows to reduce correlation
-#   Past volatility (OHLC, RV): volatility tends to be correlated with volume (both are indicative of new information)
-#   Past return: this comes from leverage effect for volatility (higher return -> lower volatility) maybe also works
-#       volume?
-#   Seasonality: day of week, day of month, day before/after holidays
-#   Cross terms: crossing existing features with stock characteristics (sp_weight) would be interesting,
-#       i.e. do larger-cap stocks react differently to past volume/vol/return/seasonality?
-# Fitting
-#   CV design: rolling train/validation periods to account for time series. Sample weight is exponentially decayed
-#      To illustrate: Train 2000-2001, validate 2002; Train 2000-2002, validate 2003, ... ;
-#           Train 2010-2016, validate 2017. Hold out 2018-2019 for test.
-#   Fitting method: Lasso (ridge yields very similar results)
-#   Hyper-param: exponential decay speed, Lasso alpha
-
 
 # code starts here
 
 import numpy as np
 import pandas as pd
 from sklearn import linear_model
-from sklearn.model_selection import train_test_split, TimeSeriesSplit
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from statsmodels.regression.linear_model import OLS
 
-DATA_PATH = '/Users/franklinwang/Downloads/sp500.h5'
+DATA_PATH = 'C:\\Users\\LucyYu\\Downloads\\sp500.h5'
 RANDOM_STATE = 0
 EPSILON = 1e-12
 
@@ -145,9 +122,9 @@ def score(score_data):
     ranks = np.append([0], ranks)
     # std err is robust to auto-correlation as well as clustering by time
     # max lag at 20 days is very conservative
-    model = OLS(endog=score_data['vlm/vlm_pred_naive-1'], exog=score_data['vlm_pred/vlm_pred_naive-1']).\
+    model = OLS(endog=score_data['vlm/vlm_pred_naive-1'], exog=score_data['vlm_pred/vlm_pred_naive-1']). \
         fit(cov_type='hac-groupsum', cov_kwds={'time': ranks, 'maxlags': 20})
-    return np.round(model.rsquared,4), np.round(model.params.iloc[0],2), np.round(model.tvalues.iloc[0],2)
+    return np.round(model.rsquared, 4), np.round(model.params.iloc[0], 2), np.round(model.tvalues.iloc[0], 2)
 
 
 def run_master():
@@ -165,15 +142,15 @@ def run_master():
     cv_slices = []
     for year in range(2002, 2020):
         validate = str(year)
-        train_start = '2000'
-        train_end = str(year-1)
+        train_start = str(max(2000, year - 10))  # max out at 10y, mainly to make the fitting code run faster
+        train_end = str(year - 1)
         train_slicer = dates.slice_indexer(start=train_start, end=train_end)
         validate_slicer = dates.slice_indexer(start=validate, end=validate)
         cv_slices.append((train_slicer, validate_slicer))
 
     # parameter grid
     params = {
-        'hl_days': [30, 180, 365, 365*3],
+        'hl_days': [30, 180, 365, 365 * 3, 365 * 5],
         'alpha': [1, 0.1, 0.01, 0.001, 0.0001]
     }
     scores = dict()
@@ -189,11 +166,11 @@ def run_master():
     print('===hyperparam scores===')
     print('- Format: (R2, beta, t) -')
     print('- based on in-sample data only: 2000-2017')
-    print(scores)
+    print(pd.Series(scores))
 
     # test
     print('===detailed fitting stats for chosen params====')
-    hl_days = 180
+    hl_days = 365 * 3
     alpha = 0.001
     prediction = predict(features, target, raw_target, cv_slices,
                          hl_days=hl_days, alpha=alpha)
@@ -206,9 +183,8 @@ def run_master():
         print('{}: {}'.format('Y' + str(year), score(prediction.loc[pd.IndexSlice[str(year), :], :])))
 
 
-
 # Press the green button in the gutter to run the script.
-# if __name__ == '__main__':
-#     run_master()
+if __name__ == '__main__':
+    run_master()
 
 # See PyCharm help at https://www.jetbrains.com/help/pycharm/
