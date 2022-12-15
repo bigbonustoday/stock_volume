@@ -140,7 +140,13 @@ def predict(features, target, raw_target, cv_slices, **params):
 
 
 def score(score_data):
-    model = OLS(endog=score_data['vlm/vlm_pred_naive-1'], exog=score_data['vlm_pred/vlm_pred_naive-1']).fit()
+    dates = score_data.index.get_level_values(0)
+    ranks = (dates[1:] != dates[:-1]).cumsum()
+    ranks = np.append([0], ranks)
+    # std err is robust to auto-correlation as well as clustering by time
+    # max lag at 20 days is very conservative
+    model = OLS(endog=score_data['vlm/vlm_pred_naive-1'], exog=score_data['vlm_pred/vlm_pred_naive-1']).\
+        fit(cov_type='hac-groupsum', cov_kwds={'time': ranks, 'maxlags': 20})
     return np.round(model.rsquared,4), np.round(model.params.iloc[0],2), np.round(model.tvalues.iloc[0],2)
 
 
